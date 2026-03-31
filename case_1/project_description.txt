@@ -1,0 +1,234 @@
+CASE SPECIFICATION
+
+Introduction
+
+In this case, you have been tasked to trade two stocks, one ETF, two prediction markets, and option contracts on a third stock (put/call). Your goal is to maximize profit while trading against other competitors and existing bots on the exchange.
+
+Assets:
+
+Stock A:
+
+Small-cap stock
+Provides structured earnings news twice per day
+Valued using a constant P/E ratio
+
+Stock B:
+
+Liquid semiconductor company
+No fundamental information provided
+Focus is on trading European options
+Option chain provided at each tick with 3 strikes around spot
+
+Stock C:
+
+Large insurance company
+Price is driven by two components:
+Business operations (earnings-based)
+Bond portfolio (rate-sensitive)
+
+ETF AKAV:
+
+Contains 1 share of each stock A, B, and C
+
+Prediction Markets:
+
+One market predicting Federal Reserve rate decisions
+One additional meta market provided during the competition
+
+TIME STRUCTURE
+
+Each round has 10 days
+Each day lasts 90 seconds
+Each second contains 5 ticks
+Positions carry over day-to-day
+Positions reset at the end of each round
+
+STOCK A MODEL
+
+Stock A pricing is based on earnings and a constant P/E ratio.
+
+Formula:
+P_t = EPS_t * PE_t
+
+Where:
+
+EPS_t is earnings per share at time t
+PE_t is constant
+
+Earnings are provided as structured news twice per day. The trader should recompute price immediately upon receiving new earnings.
+
+P/E DEPENDENCE ON YIELDS
+
+For assets affected by rates, P/E depends on yields:
+
+PE_t = PE_0 * exp(-gamma * (y_t - y_0))
+
+Where:
+
+PE_0 is baseline P/E
+gamma is sensitivity
+y_t is current yield
+y_0 is initial yield
+
+Higher yields imply lower P/E.
+
+STOCK C MODEL
+
+Stock C combines operations and a bond portfolio.
+
+Full pricing formula:
+P_t = EPS_t * PE_t + lambda * (Delta_B_t / N) + noise
+
+Where:
+
+EPS_t * PE_t is the operations component
+Delta_B_t is bond portfolio change
+lambda is weighting constant
+N is number of shares
+
+BOND PORTFOLIO MODEL
+
+Bond value change is approximated using a Taylor expansion:
+
+Delta_B_t ≈ B_0 * ( -D * Delta_y_t + (1/2) * C * (Delta_y_t)^2 )
+
+Where:
+
+B_0 is initial bond portfolio value
+D is duration
+C is convexity
+Delta_y_t = y_t - y_0
+
+Interpretation:
+
+Yield increases → bond value decreases
+Duration controls linear sensitivity
+Convexity adjusts for curvature
+
+FED PREDICTION MARKET
+
+Possible outcomes:
+
+Rate hike: +25 basis points
+Hold: 0 basis points
+Rate cut: -25 basis points
+
+Expected rate change:
+
+E[Delta_r_t] = 25 * q_hike + 0 * q_hold - 25 * q_cut
+
+Where:
+
+q_hike, q_hold, q_cut are probabilities from the market
+
+YIELD MODEL
+
+Yield is derived from expected rate change:
+
+y_t = y_0 + beta_y * E[Delta_r_t]
+
+Where:
+
+beta_y is sensitivity parameter
+
+CPI STRUCTURED NEWS
+
+CPI data includes:
+
+Forecast value
+Actual value
+
+Interpretation:
+
+Actual > Forecast → inflation stronger → higher probability of rate hikes
+Actual < Forecast → inflation weaker → higher probability of rate cuts
+
+This should update expected rate change and therefore yield.
+
+UNSTRUCTURED NEWS
+
+Unstructured news consists of headlines.
+
+Headlines may:
+
+Affect Fed expectations
+Affect specific stocks
+Be irrelevant noise
+
+These should be interpreted using keyword or sentiment-based logic.
+
+ETF MODEL
+
+ETF AKAV contains:
+
+1 share of A
+1 share of B
+1 share of C
+
+Approximate fair value:
+
+FV_ETF = FV_A + FV_B + FV_C
+
+This creates arbitrage opportunities when ETF price deviates from component sum.
+
+OPTIONS ON STOCK B
+
+European options
+Multiple strikes around spot
+Single expiration
+
+No fundamental model is provided.
+
+Useful constraints:
+
+Call price >= max(0, S - K)
+Put price >= max(0, K - S)
+Prices should be monotonic across strikes
+
+Volatility can be estimated using rolling returns of the underlying.
+
+DERIVED METRICS FOR TRADING
+
+Mid price:
+mid = (bid + ask) / 2
+
+Weighted mid:
+weighted_mid = (bid * ask_size + ask * bid_size) / (bid_size + ask_size)
+
+Book imbalance:
+imbalance = (bid_size - ask_size) / (bid_size + ask_size)
+
+Returns:
+r_t = (P_t - P_{t-1}) / P_{t-1}
+
+Short-term volatility:
+sigma_short = std(recent returns over short window)
+
+Long-term volatility:
+sigma_long = std(recent returns over long window)
+
+Volatility ratio:
+vol_ratio = sigma_short / sigma_long
+
+TRADING PIPELINE
+
+Maintain market state:
+bid/ask, sizes, trades, history
+Compute metrics:
+mid, weighted mid, volatility, imbalance
+Parse structured news:
+earnings → update A and C
+CPI → update Fed expectations and yields
+Compute fair values:
+A from EPS
+C from EPS + bond model + yields
+ETF from components
+Detect mispricing:
+compare fair value vs market price
+Execute trades:
+aggressive when strong signal
+passive otherwise
+Manage risk:
+position limits
+inventory skew
+cancel stale orders

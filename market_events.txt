@@ -1,0 +1,69 @@
+4,350
+EARNINGS
+A earnings released: 1.0
+4,200
+EARNINGS
+C earnings released: 2.3
+4,200
+EARNINGS
+A earnings released: 0.9
+4,123
+NEWS
+A A's profit margins shrink significantly due to rising costs.
+4,050
+RESOLVED
+Market fed_decision resolved → winner: R_CUT
+3,975
+FEDSPEAK
+Strong demand and sticky prices keep pressure on the Fed.
+3,900
+EARNINGS
+A earnings released: 1.0
+3,900
+CPI
+actual 0.0035 vs forecast 0.0027
+3,842
+NEWS
+A For its outstanding employee benefits, A receives recognition.
+3,775
+FEDSPEAK
+Officials emphasize balanced risks amid mixed economic indicators.
+3,750
+EARNINGS
+C earnings released: 2.2
+3,750
+EARNINGS
+A earnings released: 0.9
+3,700
+CPI
+actual 0.0017 vs forecast 0.0022
+3,650
+FEDSPEAK
+Fed keeps options open as inflation and growth signals conflict.
+3,525
+FEDSPEAK
+Strong demand and sticky prices keep pressure on the Fed.
+3,450
+EARNINGS
+A earnings released: 1.0
+3,450
+CPI
+actual 0.0003 vs forecast 0.0010
+3,325
+FEDSPEAK
+Officials signal policy may stay restrictive for longer than expected.
+3,300
+EARNINGS
+C earnings released: 2.2
+3,300
+EARNINGS
+A earnings released: 1.1
+3,250
+CPI
+actual 0.0018 vs forecast 0.0021
+3,200
+FEDSPEAK
+Fed signals increasing confidence inflation is moving back to target.
+3,075
+FEDSPEAK
+Fed signals increasing confidence inflation is moving back to target.
