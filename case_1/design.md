@@ -53,7 +53,7 @@ Plain mid is equally weighted between bid and ask regardless of how much size si
 
 #### Why `imbalance`?
 
-Imbalance is a well-documented short-horizon predictor of price direction (Cont, Kukanov & Stoikov, 2014). A strongly positive imbalance (+0.6 to +1.0) means bid depth dominates, suggesting upward pressure — we'd be more willing to lift offers. We use it as a signal modifier rather than a standalone trigger.
+Imbalance is a well-documented short-horizon predictor of price direction. A strongly positive imbalance (+0.6 to +1.0) means bid depth dominates, suggesting upward pressure — we'd be more willing to lift offers. We use it as a signal modifier rather than a standalone trigger.
 
 #### Return computation: simple returns vs log returns
 
