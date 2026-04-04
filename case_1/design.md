@@ -193,11 +193,63 @@ Returns `FV_A − market_price`. The trading layer uses this directly:
 
 ---
 
-## Phase 4 — Stock C Fair Value *(planned)*
+## Phase 4 — Stock C Fair Value (`StockCModel`)
 
-- `FV_C = EPS_C × PE_t + λ × (ΔB / N)`
-- `ΔB ≈ B_0 × (−D × Δy + 0.5 × Conv × Δy²)`
-- Two components: earnings-driven operations + bond portfolio rate sensitivity.
+### Formula
+
+```
+PE_t             = PE_0 × exp(−γ × delta_y)
+operations_value = EPS_C × PE_t
+ΔB               = B_0 × (−D × Δy  +  0.5 × Conv × Δy²)
+bond_impact      = λ × (ΔB / N)
+FV_C             = operations_value + bond_impact
+```
+
+### Two update triggers
+
+Same pattern as `StockAModel`:
+
+| Trigger | Source | Action |
+|---|---|---|
+| `on_earnings(eps)` | Structured news, asset="C" | Store EPS, recompute FV_C |
+| `on_yield_change()` | After any `YieldModel` update | Recompute PE_t, ΔB, and FV_C |
+
+### Bond portfolio model — why the Taylor expansion?
+
+The exact bond price-yield relationship is non-linear. The duration-convexity approximation is a second-order Taylor expansion around `y_0`:
+
+```
+ΔB ≈ B_0 × (−D × Δy  +  0.5 × Conv × Δy²)
+```
+
+- **First-order term** `−D × Δy`: linear rate sensitivity. Yields up → bond value down. Duration `D` is the primary lever.
+- **Second-order term** `0.5 × Conv × Δy²`: always positive (Δy² ≥ 0). This is convexity — bonds gain more than duration predicts when yields fall, and lose less when yields rise. For large Δy this correction is significant.
+
+### Why Stock C is more rate-sensitive than Stock A
+
+Stock A's only rate channel is the P/E compression/expansion. Stock C has two:
+1. P/E channel (same as A)
+2. Direct bond portfolio repricing (ΔB)
+
+A yield spike hits both simultaneously, making FV_C potentially very sensitive. LAMBDA and the bond parameters need careful calibration — miscalibrated bond parameters produce large, noisy FV_C estimates.
+
+### Decomposed components
+
+`operations_value` and `bond_impact` are stored as separate attributes so trading logic can inspect which component is driving a mispricing — useful for deciding whether to hedge with prediction markets (rate-driven move) or wait for an earnings catalyst.
+
+`delta_b` is computed even before the first EPS print arrives, so we can track bond sensitivity from tick one.
+
+### Parameters to calibrate
+
+| Parameter | Default | Meaning |
+|---|---|---|
+| `PE_0_C` | 12.0 | Baseline P/E at reference yield |
+| `GAMMA_C` | 10.0 | Rate sensitivity of P/E multiple |
+| `B_0` | 1,000,000 | Initial bond portfolio value |
+| `D` | 7.0 | Modified duration (years) |
+| `CONV` | 60.0 | Convexity |
+| `N` | 10,000 | Shares outstanding |
+| `LAMBDA` | 1.0 | Bond PnL pass-through to stock price |
 
 ---
 

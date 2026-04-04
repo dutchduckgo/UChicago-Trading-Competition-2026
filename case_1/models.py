@@ -352,6 +352,195 @@ class StockAModel:
 
 
 # ---------------------------------------------------------------------------
+# Phase 4 — Stock C fair value
+# ---------------------------------------------------------------------------
+
+# Stock C P/E parameters — same exponential form as Stock A.
+# Stock C is a large insurance company so its P/E may compress differently
+# than a small-cap; keep GAMMA_C as a separate knob even if initially equal.
+PE_0_C: float = 12.0
+GAMMA_C: float = 10.0
+
+# Bond portfolio parameters.
+# These describe the insurance company's fixed-income holdings.
+# B_0    : total market value of the bond portfolio at the reference yield y_0.
+# D      : modified duration (years). Controls linear rate sensitivity.
+#          A duration of 7 means a 100bp yield rise ≈ 7% drop in bond value.
+# CONV   : convexity. Corrects for the curvature in the price-yield relationship.
+#          Bonds gain more in price when yields fall than they lose when yields
+#          rise by the same amount — convexity captures this asymmetry.
+# N      : number of shares outstanding. Scales ΔB down to a per-share contribution.
+# LAMBDA : weighting constant that maps the per-share bond PnL into a stock price
+#          impact. Reflects how much of the bond portfolio change flows through
+#          to the stock price (accounting for leverage, hedges, etc.).
+B_0:    float = 1_000_000.0   # placeholder — confirm from competition parameters
+D:      float = 7.0            # years of duration
+CONV:   float = 60.0           # convexity (dimensionless)
+N:      float = 10_000.0       # shares outstanding
+LAMBDA: float = 1.0            # pass-through weight; calibrate against C price history
+
+
+class StockCModel:
+    """
+    Fair value model for Stock C (large insurance company).
+
+    Stock C has two price components:
+
+        FV_C = operations_value + bond_portfolio_impact + noise
+
+    where:
+        operations_value     = EPS_C × PE_t
+        bond_portfolio_impact = lambda × (ΔB / N)
+        ΔB ≈ B_0 × (−D × Δy  +  0.5 × Conv × Δy²)
+
+    The noise term is unmodellable; we ignore it and trade on the signal
+    from the two structured components.
+
+    Update triggers (same pattern as StockAModel):
+      - on_earnings(eps) : new EPS from structured earnings news for asset "C"
+      - on_yield_change(): yield has moved — recomputes both PE_t and ΔB
+    """
+
+    def __init__(
+        self,
+        yield_model: "YieldModel",
+        pe_0: float = PE_0_C,
+        gamma: float = GAMMA_C,
+        b_0: float = B_0,
+        duration: float = D,
+        convexity: float = CONV,
+        n_shares: float = N,
+        lam: float = LAMBDA,
+    ):
+        self.yield_model = yield_model
+        self.pe_0 = pe_0
+        self.gamma = gamma
+        self.b_0 = b_0
+        self.duration = duration
+        self.convexity = convexity
+        self.n_shares = n_shares
+        self.lam = lam
+
+        self.eps: Optional[float] = None
+
+        # Decomposed components — stored separately so downstream code can
+        # inspect how much of the fair value comes from operations vs bonds.
+        self.pe_t: Optional[float] = None
+        self.operations_value: Optional[float] = None   # EPS × PE_t
+        self.delta_b: Optional[float] = None            # total bond portfolio ΔV
+        self.bond_impact: Optional[float] = None        # lambda × (ΔB / N) per share
+        self.fair_value: Optional[float] = None
+
+    # ------------------------------------------------------------------
+    # Update path 1: earnings news
+    # ------------------------------------------------------------------
+
+    def on_earnings(self, eps: float) -> None:
+        """
+        Record a new EPS value and recompute fair value.
+
+        Called from bot_handle_news when:
+            news_type == "structured"
+            structured_subtype == "earnings"
+            asset == "C"
+        """
+        self.eps = eps
+        self._recompute()
+
+    # ------------------------------------------------------------------
+    # Update path 2: yield changed
+    # ------------------------------------------------------------------
+
+    def on_yield_change(self) -> None:
+        """
+        Recompute PE_t, ΔB, and fair_value after yield has moved.
+
+        Both the operations component (via PE_t) and the bond component
+        (via ΔB) depend on delta_y, so a single yield move updates both
+        simultaneously. This is the key difference from Stock A — for C,
+        yield changes have a direct, immediate second path to price through
+        the bond portfolio, making it more rate-sensitive overall.
+        """
+        self._recompute()
+
+    # ------------------------------------------------------------------
+    # Internal
+    # ------------------------------------------------------------------
+
+    def _recompute(self) -> None:
+        """
+        Core computation:
+
+        Step 1 — Rate-adjusted P/E (identical to StockAModel):
+            PE_t = PE_0 × exp(−gamma × delta_y)
+
+        Step 2 — Bond portfolio value change (Taylor expansion):
+            ΔB ≈ B_0 × (−D × Δy  +  0.5 × Conv × Δy²)
+
+            The first-order term (−D × Δy) is the dominant effect:
+              yields up → bond prices down.
+            The second-order term (0.5 × Conv × Δy²) is always positive:
+              convexity means bonds lose less than duration predicts on
+              yield rises, and gain more on yield falls.
+
+        Step 3 — Per-share bond impact:
+            bond_impact = lambda × (ΔB / N)
+
+        Step 4 — Combined fair value:
+            FV_C = (EPS × PE_t) + bond_impact
+                 = operations_value + bond_impact
+        """
+        delta_y: float = self.yield_model.delta_y or 0.0
+
+        # Step 1: P/E with rate adjustment
+        pe_t = self.pe_0 * math.exp(-self.gamma * delta_y)
+        self.pe_t = pe_t
+
+        # Step 2: Bond portfolio change via duration-convexity approximation.
+        # Sign convention: delta_y > 0 (yields rise) → ΔB negative (bonds lose value).
+        self.delta_b = self.b_0 * (
+            -self.duration * delta_y
+            + 0.5 * self.convexity * delta_y ** 2
+        )
+
+        # Step 3: Per-share bond impact scaled by lambda.
+        self.bond_impact = self.lam * (self.delta_b / self.n_shares)
+
+        # Step 4: Combine only once we have EPS. Bond impact is always computed
+        # (it depends only on yield, not EPS) so we can still track rate
+        # sensitivity even before the first earnings print.
+        if self.eps is not None:
+            self.operations_value = self.eps * pe_t
+            self.fair_value = self.operations_value + self.bond_impact
+
+    def is_ready(self) -> bool:
+        """True once EPS has been received and fair_value is computed."""
+        return self.fair_value is not None
+
+    def mispricing(self, market_price: float) -> Optional[float]:
+        """
+        Returns fair_value − market_price.
+        Positive → underpriced (buy signal).
+        Negative → overpriced (sell signal).
+        Returns None if fair value is not yet computed.
+        """
+        if self.fair_value is None:
+            return None
+        return self.fair_value - market_price
+
+    def __repr__(self) -> str:
+        if not self.is_ready():
+            return "StockCModel(not yet initialised)"
+        return (
+            f"StockCModel(FV={self.fair_value:.2f}, "
+            f"ops={self.operations_value:.2f}, "
+            f"bond_impact={self.bond_impact:.2f}, "
+            f"PE_t={self.pe_t:.3f}, "
+            f"ΔB={self.delta_b:.0f})"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Shared helper
 # ---------------------------------------------------------------------------
 
