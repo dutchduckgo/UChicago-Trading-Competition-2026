@@ -253,12 +253,42 @@ A yield spike hits both simultaneously, making FV_C potentially very sensitive. 
 
 ---
 
-## Phase 5 — ETF Arbitrage *(planned)*
+## Phase 5 — ETF Arbitrage (`ETFModel`)
 
-- `FV_ETF = FV_A + FV_B + FV_C`
-- If `market_ETF > FV_ETF + swap_cost(5)`: sell ETF, buy components via swap.
-- If `market_ETF < FV_ETF − swap_cost(5)`: buy ETF, sell components via swap.
-- Swap cost is flat 5 per swap regardless of quantity.
+### Fair value
+
+```
+FV_ETF = FV_A + FV_B + FV_C
+```
+
+FV_B has no fundamental model — we use `weighted_mid("B")` as the best available proxy.
+
+### Two arb signals
+
+The model exposes two independent signals:
+
+**Signal 1 — model-based mispricing** (`fv_mispricing()`):
+```
+FV_ETF − market_mid(ETF)
+```
+Noisy: depends on FV_A, FV_C model parameters. Use as a directional indicator.
+
+**Signal 2 — executable arb profit** (model-independent):
+
+| Direction | Legs | Profit formula |
+|---|---|---|
+| Sell ETF (ETF overpriced) | Buy A+B+C at ask → `toETF` swap → sell ETF at bid | `bid_ETF − (ask_A + ask_B + ask_C) − 5` |
+| Buy ETF (ETF underpriced) | Buy ETF at ask → `fromETF` swap → sell A+B+C at bid | `(bid_A + bid_B + bid_C) − ask_ETF − 5` |
+
+Execute a swap **only when executable arb profit > 0**. The model-based signal guides conviction but should never override the sign of the executable profit check.
+
+### State design: caching best_bid / best_ask in SymbolState
+
+`SymbolState.update_book()` already computes `max(bids)` and `min(asks)`. We now cache them as `best_bid` and `best_ask` fields, with `MarketState.best_bid(symbol)` / `best_ask(symbol)` accessors. This keeps arb profit fully self-contained in `models.py` without reaching into `XChangeClient.order_books`.
+
+### Why FV_B = market mid is acceptable
+
+The ETF arb is fundamentally a price relationship check (A + B + C ≈ ETF), not a fundamental valuation. Even with a noisy FV_B, the **executable arb profit** signal is exact — it only uses live bid/ask prices and the known swap cost. As long as we gate execution on that signal, the absence of a B fundamental model is irrelevant for arb trades.
 
 ---
 

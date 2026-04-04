@@ -54,6 +54,13 @@ class SymbolState:
     # metrics because trades can occur away from the best bid/ask.
     last_trade: Optional[float] = None
 
+    # Best bid and ask prices from the top of book.
+    # Cached here so that arb profit calculations in models.py can read
+    # them directly from MarketState without accessing XChangeClient.order_books.
+    # Updated every time update_book() is called.
+    best_bid: Optional[float] = None
+    best_ask: Optional[float] = None
+
     # ------------------------------------------------------------------
     # Rolling price and return history (internal, for vol computation)
     # ------------------------------------------------------------------
@@ -109,6 +116,9 @@ class SymbolState:
         bid_size = bids[best_bid]
         ask_size = asks[best_ask]
 
+        # Cache raw best bid/ask for arb profit calculations.
+        self.best_bid = float(best_bid)
+        self.best_ask = float(best_ask)
         self.mid = (best_bid + best_ask) / 2.0
 
         total = bid_size + ask_size
@@ -257,3 +267,11 @@ class MarketState:
 
     def vol_ratio(self, symbol: str) -> Optional[float]:
         return self._state.get(symbol, SymbolState()).vol_ratio
+
+    def best_bid(self, symbol: str) -> Optional[float]:
+        """Best (highest) bid price at the top of the book."""
+        return self._state.get(symbol, SymbolState()).best_bid
+
+    def best_ask(self, symbol: str) -> Optional[float]:
+        """Best (lowest) ask price at the top of the book."""
+        return self._state.get(symbol, SymbolState()).best_ask

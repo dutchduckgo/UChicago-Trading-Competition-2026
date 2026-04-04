@@ -180,7 +180,7 @@ class YieldModel:
 
         # Expected rate change in basis points.
         # Rate hike = +25bp, hold = 0bp, cut = −25bp.
-        self.E_delta_r = 25.0 * self.q_hike + 0.0 * self.q_hold - 25.0 * self.q_cut
+        self.E_delta_r = 25.0 * self.q_hike - 25.0 * self.q_cut # removed + 0.0 * self.q_hold
 
         # Current yield derived from expected rate change.
         self.y_t = self.y_0 + self.beta_y * self.E_delta_r
@@ -541,8 +541,186 @@ class StockCModel:
 
 
 # ---------------------------------------------------------------------------
-# Shared helper
+# Phase 5 — ETF arbitrage model
 # ---------------------------------------------------------------------------
+
+# Flat swap cost (both directions) as defined in DEFAULT_SWAP_MAP.
+# toETF:   A + B + C → ETF, cost 5
+# fromETF: ETF → A + B + C, cost 5
+ETF_SWAP_COST: int = 5
+
+
+class ETFModel:
+    """
+    Fair value and arbitrage model for ETF AKAV.
+
+    AKAV = 1 share A + 1 share B + 1 share C.
+    Fair value: FV_ETF = FV_A + FV_B + FV_C
+
+    Stock B has no fundamental model, so we use its market mid as FV_B.
+    This means the ETF FV estimate inherits whatever noise exists in the B mid,
+    but there is no better alternative without an options-derived estimate.
+
+    Two types of arbitrage, both requiring a swap (cost 5 flat):
+
+      SELL ETF arb (ETF overpriced):
+        Buy A at ask, buy B at ask, buy C at ask
+        → place_swap_order("toETF")          [cost 5]
+        → sell ETF at bid
+        Profit = ETF_bid − (ask_A + ask_B + ask_C) − 5
+
+      BUY ETF arb (ETF underpriced):
+        Buy ETF at ask
+        → place_swap_order("fromETF")        [cost 5]
+        → sell A at bid, sell B at bid, sell C at bid
+        Profit = (bid_A + bid_B + bid_C) − ETF_ask − 5
+
+    The model exposes both the FV-based mispricing (a noisy, model-dependent
+    signal) and the executable arb profit (derived entirely from live book
+    prices — model-independent). The bot should gate on executable profit
+    being positive before sending swap orders.
+    """
+
+    def __init__(
+        self,
+        stock_a: StockAModel,
+        stock_c: StockCModel,
+        market_state: MarketState,
+        swap_cost: int = ETF_SWAP_COST,
+    ):
+        self.stock_a = stock_a
+        self.stock_c = stock_c
+        self.market_state = market_state
+        self.swap_cost = swap_cost
+
+        # Cached fair values — updated on demand via update()
+        self.fv_a: Optional[float] = None
+        self.fv_b: Optional[float] = None   # market mid — no fundamental model
+        self.fv_c: Optional[float] = None
+        self.fair_value: Optional[float] = None
+
+    # ------------------------------------------------------------------
+    # Update
+    # ------------------------------------------------------------------
+
+    def update(self) -> None:
+        """
+        Recompute FV_ETF from current model estimates and market mids.
+
+        Call this after any event that could change component fair values:
+          - After on_earnings / on_yield_change for A or C
+          - After a book update for B or ETF
+          - After any YieldModel update
+
+        FV_B uses weighted_mid (falls back to mid) as the best available
+        price for B since no earnings or structural model exists for it.
+        """
+        self.fv_a = self.stock_a.fair_value
+        self.fv_b = _best_mid(self.market_state, "B")
+        self.fv_c = self.stock_c.fair_value
+
+        if self.fv_a is not None and self.fv_b is not None and self.fv_c is not None:
+            self.fair_value = self.fv_a + self.fv_b + self.fv_c
+
+    def is_ready(self) -> bool:
+        return self.fair_value is not None
+
+    # ------------------------------------------------------------------
+    # Signal 1: model-based mispricing
+    # ------------------------------------------------------------------
+
+    def fv_mispricing(self) -> Optional[float]:
+        """
+        FV_ETF − market_mid(ETF).
+
+        Positive → ETF is underpriced relative to component fair values (buy ETF).
+        Negative → ETF is overpriced (sell ETF / buy components).
+
+        This signal is noisy because FV_A and FV_C depend on model parameters
+        (EPS, PE_0, bond params) that may be miscalibrated. Use it as a
+        directional indicator rather than a precise threshold.
+        """
+        if self.fair_value is None:
+            return None
+        etf_mid = _best_mid(self.market_state, "ETF")
+        if etf_mid is None:
+            return None
+        return self.fair_value - etf_mid
+
+    # ------------------------------------------------------------------
+    # Signal 2: executable arb profit (model-independent)
+    # ------------------------------------------------------------------
+
+    def sell_etf_arb_profit(self) -> Optional[float]:
+        """
+        Profit from: buy A+B+C at ask → toETF swap (cost 5) → sell ETF at bid.
+
+        ETF is overpriced when this is positive.
+        Returns None if any required book price is missing.
+
+        This is model-independent: it uses only live bid/ask prices and the
+        known swap cost. Execute when > 0, size conservatively on first trades
+        until you have confidence in fill rates on all legs.
+        """
+        etf_bid = _best_bid(self.market_state, "ETF")
+        ask_a   = _best_ask(self.market_state, "A")
+        ask_b   = _best_ask(self.market_state, "B")
+        ask_c   = _best_ask(self.market_state, "C")
+
+        if any(x is None for x in (etf_bid, ask_a, ask_b, ask_c)):
+            return None
+
+        return etf_bid - (ask_a + ask_b + ask_c) - self.swap_cost   # type: ignore[operator]
+
+    def buy_etf_arb_profit(self) -> Optional[float]:
+        """
+        Profit from: buy ETF at ask → fromETF swap (cost 5) → sell A+B+C at bid.
+
+        ETF is underpriced when this is positive.
+        Returns None if any required book price is missing.
+        """
+        etf_ask = _best_ask(self.market_state, "ETF")
+        bid_a   = _best_bid(self.market_state, "A")
+        bid_b   = _best_bid(self.market_state, "B")
+        bid_c   = _best_bid(self.market_state, "C")
+
+        if any(x is None for x in (etf_ask, bid_a, bid_b, bid_c)):
+            return None
+
+        return (bid_a + bid_b + bid_c) - etf_ask - self.swap_cost   # type: ignore[operator]
+
+    def __repr__(self) -> str:
+        if not self.is_ready():
+            return "ETFModel(not yet initialised)"
+        sell_p = self.sell_etf_arb_profit()
+        buy_p  = self.buy_etf_arb_profit()
+        return (
+            f"ETFModel(FV={self.fair_value:.2f}, "
+            f"sell_arb={sell_p:.2f if sell_p is not None else 'N/A'}, "
+            f"buy_arb={buy_p:.2f if buy_p is not None else 'N/A'})"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+def _best_bid(market_state: MarketState, symbol: str) -> Optional[float]:
+    """
+    Best (highest) bid price at the top of the book for symbol.
+    Reads from MarketState.best_bid, which is cached by SymbolState.update_book()
+    on every book snapshot and incremental update.
+    """
+    return market_state.best_bid(symbol)
+
+
+def _best_ask(market_state: MarketState, symbol: str) -> Optional[float]:
+    """
+    Best (lowest) ask price at the top of the book for symbol.
+    Reads from MarketState.best_ask, which is cached by SymbolState.update_book().
+    """
+    return market_state.best_ask(symbol)
+
 
 def _best_mid(market_state: MarketState, symbol: str) -> Optional[float]:
     """
